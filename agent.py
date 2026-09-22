@@ -17,8 +17,71 @@ from support import (MODEL, SYSTEM_PROMPT, call_local, execute_tool, mcp_client,
 MAX_TOOL_CALLS = 8  # Larkspur's own build capped the loop here; then a human takes over.
 
 TONE_ADDENDUM = ""                       # ✏️ Build 4, step 4.1, intelligence goal
-EXTRA_TOOLS: List[Dict[str, Any]] = []   # ✏️ Build 2, step 2.1: schemas for the tools you add
-LOCAL_TOOLS: Dict[str, Any] = {}         # ✏️ Build 2, step 2.1: the functions behind them
+EXTRA_TOOLS: List[Dict[str, Any]] = [
+
+     {
+            "name": "next_available_day",
+            "description": (
+                "Find the earliest date with an open seat after a flight disruption when "
+                "the customer asks when they can actually travel. Use this for a specific "
+                "origin, destination, and travel date; it returns the first available date."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string"},
+                    "dest": {"type": "string"},
+                    "date": {"type": "string", "description": "Travel date in YYYY-MM-DD format"},
+                    "cabin": {"type": "string", "enum": ["Y", "J", "F"]},
+                },
+                "required": ["origin", "dest", "date"],
+            },  
+        },
+        {
+            "name": "fare_rules",
+            "description": (
+                "Look up the fare rules for a given section number or title. Returns the "
+                "text of the matching section, or a message if no match is found. The fare rules are stored in a local file Handbook excerpt in the repo: fare family, change fee, fare difference"
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "section": {"type": "string"},
+                },
+                "required": ["section"],
+            },  
+        }
+
+
+]  
+def fare_rules(section: str) -> str:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "americas", "fare_rules_excerpt.md")
+    text = open(path, encoding="utf-8").read()
+
+    sections = []
+    current = None
+    for line in text.splitlines():
+        if line.startswith("### "):
+            heading = line[4:].strip()
+            match = re.match(r"^(\d+)\.\s*(.*)$", heading)
+            current = {"number": match.group(1) if match else "",
+                       "title": match.group(2) if match else heading,
+                       "heading": heading, "lines": []}
+            sections.append(current)
+        elif current is not None:
+            current["lines"].append(line)
+    for s in sections:
+        s["text"] = "### %s\n\n%s" % (s["heading"], "\n".join(s["lines"]).strip())    
+    query = re.sub(r"^section\s+", "", (section or "").strip().lower()).rstrip(".")
+    for s in sections:
+        if query == s["number"] or query in s["title"].lower():
+            return s["text"]
+    return "No matching section. Available: %s" % ", ".join(
+        "%s (%s)" % (s["number"], s["title"]) for s in sections
+    )
+
+ # ✏️ Build 2, step 2.1: schemas for the tools you add
+LOCAL_TOOLS: Dict[str, Any] = {"next_available_day": next_available_day, "fare_rules": fare_rules}         # ✏️ Build 2, step 2.1: the functions behind them
 
 
 def text_of(response) -> str:
@@ -68,15 +131,15 @@ def run_agent(pnr: str, last_name: str, message: str) -> str:            # ✏�
     answer = ""
     turns = 1
     while response.stop_reason == "tool_use" and turns < MAX_TOOL_CALLS:
-        messages.append({"role": "assistant", "content": text_of(response)})
+        messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results(response)})
-        answer = text_of(response)
         response = client.messages.create(
             model=MODEL, max_tokens=4096, system=runtime_preamble() + SYSTEM_PROMPT + TONE_ADDENDUM,
             thinking={"type": "adaptive"}, tools=tools, messages=messages,
         )
         turns += 1
 
+    answer = text_of(response)
     return answer
 
 
@@ -119,14 +182,18 @@ def build_tools() -> List[Dict[str, Any]]:                 # ✏️ Build 1, ste
                 "type": "object",
                 "properties": {
                     "flight_no": {"type": "string"},
-                    "date": {"type": "string", "description": "MM/DD/YYYY"},
+                    "date": {"type": "string", "description": "YYYY-MM-DD"},
                 },
                 "required": ["flight_no", "date"],
             },
         },
         {
             "name": "search_alternatives",
-            "description": "search",
+            "description": (
+                "Find available replacement flights for the customer's booking after a "
+                "disruption. Use it when the customer needs different flight options; "
+                "provide the PNR and review the returned options before offering one."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {"pnr": {"type": "string"}},
