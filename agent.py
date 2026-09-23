@@ -9,6 +9,8 @@ Where you edit:   grep -n '✏' agent.py   (six marks, one per place)
 Steps and gates:  https://anthropicpartnerbasecamp.bts.com/
 """
 from __future__ import annotations
+import os
+import re
 from typing import Any, Dict, List
 from support import (MODEL, SYSTEM_PROMPT, call_local, execute_tool, mcp_client,
                      new_session, next_available_day, record_tool_result,
@@ -16,7 +18,15 @@ from support import (MODEL, SYSTEM_PROMPT, call_local, execute_tool, mcp_client,
 
 MAX_TOOL_CALLS = 8  # Larkspur's own build capped the loop here; then a human takes over.
 
-TONE_ADDENDUM = ""                       # ✏️ Build 4, step 4.1, intelligence goal
+TONE_ADDENDUM = """
+=== SAFETY AND TONE ADDENDUM ===
+
+When a customer is abusive, threatens legal action, or makes a serious complaint,
+acknowledge the complaint once in calm, professional language. Do not mirror the
+customer's hostility, argue, promise compensation, or give a normal entitlements
+rundown as if the complaint was not made. Escalate to a human with a concise factual
+summary. Do not issue a voucher or confirm a rebooking in that conversation.
+"""                                      # ✏️ Build 4, step 4.1, intelligence goal
 EXTRA_TOOLS: List[Dict[str, Any]] = [
 
      {
@@ -56,7 +66,11 @@ EXTRA_TOOLS: List[Dict[str, Any]] = [
 ]  
 def fare_rules(section: str) -> str:
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "americas", "fare_rules_excerpt.md")
-    text = open(path, encoding="utf-8").read()
+    try:
+        with open(path, encoding="utf-8") as fare_file:
+            text = fare_file.read()
+    except OSError:
+        return "The fare rules excerpt is not available on this machine."
 
     sections = []
     current = None
@@ -72,9 +86,9 @@ def fare_rules(section: str) -> str:
             current["lines"].append(line)
     for s in sections:
         s["text"] = "### %s\n\n%s" % (s["heading"], "\n".join(s["lines"]).strip())    
-    query = re.sub(r"^section\s+", "", (section or "").strip().lower()).rstrip(".")
+    query = re.sub(r"^section\s+", "", section.strip().lower() if isinstance(section, str) else "").rstrip(".")
     for s in sections:
-        if query == s["number"] or query in s["title"].lower():
+        if query and (query == s["number"] or query in s["title"].lower()):
             return s["text"]
     return "No matching section. Available: %s" % ", ".join(
         "%s (%s)" % (s["number"], s["title"]) for s in sections
@@ -146,7 +160,12 @@ def run_agent(pnr: str, last_name: str, message: str) -> str:            # ✏�
 def tool_list() -> List[Dict[str, Any]]:                   # ✏️ Build 2, step 2.2
     """Given. Exactly what Claude is offered on every turn; run.py --show-tools
     prints this list."""
-    return build_tools() + EXTRA_TOOLS
+    mcp_tools = mcp_client.tools()
+    mcp_names = {tool["name"] for tool in mcp_tools}
+    for name in mcp_names:
+        LOCAL_TOOLS.pop(name, None)
+    local_tools = [tool for tool in EXTRA_TOOLS if tool["name"] not in mcp_names]
+    return build_tools() + local_tools + mcp_tools
 
 
 # ──────────────────────────────────────────────────────────────────────────────
