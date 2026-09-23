@@ -8,7 +8,7 @@ Number: 11 tools; 2,391 to 2,840 input-schema tokens per turn (+449).
 Safety check: Requires booking and flight context before policy decisions; irreversible rebooking still requires a confirmation token.
 Next: Run the before-and-after intelligence bench across the Stage 2 cases.
 Still broken: Fare-rules routing and the intelligence improvement still need broader measured coverage.
-Lever: intelligence
+Lever: cost
 
 ## Priya asked
 
